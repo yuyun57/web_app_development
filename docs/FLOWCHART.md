@@ -1,84 +1,116 @@
-# 系統流程圖：線上算命系統
+# 系統流程與功能對照表 (Flowchart)
 
-本文件根據產品需求文件 (PRD) 與系統架構文件 (ARCHITECTURE)，繪製線上算命系統的使用者流程與系統資料流。
+這份文件基於 PRD 與系統架構的設計，具象化地描繪了樂迷從進入網站到完成購票的「使用者流程」，以及核心搶票與結帳動作背後的「系統序列圖」。
 
-## 1. 使用者流程圖（User Flow）
+## 1. 使用者流程圖 (User Flow)
 
-此流程圖描述使用者進入網站後，可以進行的各種操作路徑，包含抽籤互動、會員登入與後續如捐款、儲存等動作。
+這張圖展示了樂迷在搶票情境中的標準操作路徑與可能的分支：
 
 ```mermaid
 flowchart LR
-    A([使用者造訪首頁]) --> B[首頁 / 導覽]
-    B --> C{選擇系統功能}
+    A([使用者造訪首頁]) --> B{是否已登入且實名驗證?}
+    B -->|否| C[登入/註冊]
+    C --> D[手機與實名證件驗證]
+    D --> E[瀏覽演唱會場次]
+    B -->|是| E
     
-    %% 算命抽籤主流程
-    C -->|1. 開始抽籤/算命| D[前端互動動畫（擲筊/搖籤筒）]
-    D --> E[顯示算命與抽籤結果]
+    E --> F{是否到達開賣時間?}
+    F -->|否| G[加入收藏 / 等待]
+    F -->|是| H[點擊「立即搶票」]
     
-    %% 抽籤結果後的後續動作
-    E --> F{觀看結果後...}
-    F -->|分享結果| K[呼叫社群分享 (FB/Line)]
-    F -->|儲存紀錄| G{是否已登入？}
+    H --> I[進入虛擬等候室]
+    I --> J{是否排到號碼?}
+    J -->|否| I
+    J -->|是| K[防黃牛驗證 (圖形/問答)]
     
-    G -->|未登入| I[導向登入/註冊頁面]
-    I -->|登入成功| H
-    G -->|已登入| H[將紀錄存入個人帳號]
-    H --> J[個人歷史紀錄頁面]
+    K --> L{驗證正確?}
+    L -->|否| K
+    L -->|是| M[顯示座位地圖]
     
-    %% 其他功能
-    C -->|2. 查看歷史紀錄| G
-    C -->|3. 捐獻香油錢| L[捐獻頁面 (顯示轉帳/金流)]
-    F -->|點擊香油錢| L
+    M --> N[點選空位]
+    N --> O{座位鎖定成功?}
+    O -->|否, 已被搶走| M
+    O -->|是| P[進入結帳流程 (保留10分鐘)]
+    
+    P --> Q[選擇付款方式並結帳]
+    Q --> R{是否在 10 分鐘內付款?}
+    R -->|是| S([購票成功，產生訂單])
+    R -->|否, 超時| T([座位自動釋出回市場])
+    T -.-> M
 ```
 
-## 2. 系統序列圖（Sequence Diagram）
+---
 
-此序列圖描述核心情境：「**使用者進行抽籤並儲存結果**」的完整系統流轉過程。
+## 2. 系統序列圖 (Sequence Diagram)
+
+這裡我們針對最關鍵的「**高併發搶票與鎖定座位**」流程，繪製出前端瀏覽器、Flask 伺服器、Redis（處理等候與鎖定）以及 SQLite（訂單儲存）的系統互動時序：
 
 ```mermaid
 sequenceDiagram
     actor User as 使用者
-    participant Browser as 瀏覽器 (JS/HTML)
-    participant Route as Flask Route (Controller)
-    participant Model as Database Model 
-    participant DB as SQLite
+    participant Browser as 瀏覽器 (JS AJAX)
+    participant Flask as Flask Route
+    participant Redis as Redis (Queue & Lock)
+    participant DB as SQLite (訂單區)
 
-    User->>Browser: 1. 點擊「開始抽籤」
-    Browser->>Browser: 2. 播放抽籤動畫 (不消耗伺服器資源)
-    Browser->>Route: 3. POST /draw (獲取抽籤結果)
-    Route->>Model: 4. 隨機讀取籤詩庫
-    Model-->>Route: 5. 回傳對應的籤詩資料
-    Route-->>Browser: 6. 回傳結果頁面 (Jinja2 HTML)
-
-    User->>Browser: 7. 點擊「儲存紀錄」
-    Browser->>Route: 8. POST /record/save
-    Route->>Route: 9. 檢查 Session 確認登入狀態
+    %% 階段 1: 排隊分流
+    User->>Browser: 點選「立即搶票」
+    Browser->>Flask: POST /concerts/{id}/queue
+    Flask->>Redis: 將 UserID 加入 ZSET 佇列 (依時間戳排序)
+    Redis-->>Flask: 回傳當前列隊順位
+    Flask-->>Browser: 重導向到 /queue/status 等候頁面
     
-    alt 如果使用者尚未登入
-        Route-->>Browser: 10a. HTTP 302 導向至 /login
-        User->>Browser: 11a. 填寫帳密登入並自動回源
+    loop 前端 Polling
+        Browser->>Flask: GET /queue/status
+        Flask->>Redis: 查詢 ZRANK 判斷是否輪到
+        Redis-->>Flask: 未到號 (或已到號)
+        Flask-->>Browser: 返回等待狀態與順位
     end
 
-    Route->>Model: 10b. 呼叫寫入算命紀錄函式
-    Model->>DB: 11b. INSERT INTO records (user_id, result)
-    DB-->>Model: 12. 寫入成功
-    Model-->>Route: 13. 回傳成功狀態
-    Route-->>Browser: 14. HTTP 302 導向至 /history
-    Browser->>User: 15. 顯示歷史紀錄列表
+    %% 階段 2: 防黃牛與選位
+    Browser->>Flask: 重導向到防黃牛頁面並驗證
+    Flask-->>Browser: 驗證成功，進入座位地圖
+    
+    User->>Browser: 點選座位 A1
+    Browser->>Flask: POST /seats/lock (SeatID=A1)
+    Flask->>Redis: SETNX lock:seat:A1 UserID EX 600 (鎖定10分鐘)
+    
+    alt 鎖定成功
+        Redis-->>Flask: 成功 (1)
+        Flask-->>Browser: 鎖定成功，跳轉結帳頁
+        %% 階段 3: 結帳完成
+        User->>Browser: 填寫資料並送出信用卡
+        Browser->>Flask: POST /orders
+        Flask->>DB: INSERT INTO orders (UserID, SeatID, Status=Paid)
+        DB-->>Flask: 成功
+        Flask->>Redis: DEL lock:seat:A1 (提早釋放鎖，或不管讓它過期)
+        Flask-->>Browser: 購票成功畫面
+    else 鎖定失敗 (已被他人搶走)
+        Redis-->>Flask: 失敗 (0)
+        Flask-->>Browser: 顯示「座位已被選走」，重新載入空位表
+    end
 ```
 
-## 3. 功能清單與路由對照表
+---
 
-以下整理了系統內所有的主要功能，並對應到具體的 HTTP 方法、URL 路徑，與將被渲染的 Jinja2 模板檔，以利後續的 `/api-design` 與路由開發。
+## 3. 功能清單與 API 對照表
 
-| 功能名稱 | 功能說明 | URL 路徑 | HTTP 方法 | 對應視圖 (Jinja2 / Controller 行為) |
-|----------|------|----------|-----------|------------------|
-| **網站首頁** | 顯示系統導覽與開始算命按鈕 | `/` | GET | `index.html` |
-| **會員註冊** | 填寫表單建立新使用者 | `/register` | GET, POST | `auth/register.html` |
-| **會員登入** | 登入並寫入 Session | `/login` | GET, POST | `auth/login.html` |
-| **會員登出** | 清除 Session 狀態 | `/logout` | GET | 無 (直接導回到首頁 `/`) |
-| **執行抽籤** | 送出抽籤請求獲取隨機結果 | `/draw` | POST | 核心邏輯處理後導向 `/result/<id>` |
-| **顯示結果** | 呈現籤詩或算命的詳細內容 | `/result/<id>` | GET | `result.html` |
-| **儲存結果** | 將當下這筆紀錄綁定使用者帳號 | `/record/save` | POST | 無 (直接導向至 `/history`) |
-| **歷史紀錄** | 列出自己過去儲存的算命結果 | `/history` | GET | `history.html` |
-| **捐香油錢** | 顯示線上捐款或轉帳資訊頁面 | `/donate` | GET, POST | `donate.html` |
+以下為系統中預計實作的 Flask 路由、HTTP 方法及對應的功能描述：
+
+| 功能群組 | HTTP 方法 | URL 路徑 | 功能說明 |
+| :--- | :--- | :--- | :--- |
+| **會員與認證** | `GET` | `/login` | 顯示登入與註冊頁面 |
+| | `POST` | `/login` | 處理使用者登入邏輯 |
+| | `GET` | `/verify` | 顯示實名制與手機驗證頁面 |
+| | `POST` | `/verify` | 提交實名驗證資料（防黃牛第一道防線） |
+| **演唱會瀏覽** | `GET` | `/` | 網站首頁（顯示即將開賣的演唱會） |
+| | `GET` | `/concerts/<id>` | 演唱會詳細資訊（時間、地點、票價） |
+| **搶票與等候室**| `POST` | `/<id>/queue/join`| 點擊搶票，將使用者發送進 Redis 排隊隊列 |
+| | `GET` | `/queue/status` | AJAX polling 查詢當前排隊順位 |
+| | `GET` | `/captcha` | 當排到號碼時，顯示驗證碼/防黃牛題目頁面 |
+| | `POST`| `/captcha/verify` | 驗證防黃牛題目是否正確 |
+| **即時選位** | `GET` | `/<id>/seats` | 顯示剩餘可選的視覺化座位表 |
+| | `POST` | `/<id>/seats/lock`| 點選座位，嘗試在 Redis 設定 10 分鐘的不可更動鎖定 |
+| **結帳與訂單** | `GET` | `/checkout` | 顯示填寫收件資訊與付款方式頁面 |
+| | `POST` | `/orders` | 創建最終訂單，寫入 SQLite，處理結帳邏輯 |
+| | `GET` | `/orders/<order_id>`| 查詢歷史訂單與票券狀態 |
