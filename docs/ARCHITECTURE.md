@@ -1,97 +1,96 @@
-# 系統架構設計：線上算命系統
+# 系統架構設計文件 (Architecture)
+
+基於 [PRD 需求文件](./PRD.md) 的產品功能與技術指標要求，本文件定義了「演唱會搶票系統」技術架構、資料夾結構與核心元件關係。
 
 ## 1. 技術架構說明
 
-本專案採用伺服器端渲染（Server-Side Rendering, SSR）架構，不進行前後端分離，以保持架構單純，適合快速開發與驗證 MVP（最小可行性產品）。
+儘管本專案採用 Flask + SQLite 的輕量架構，為了符合 PRD 所提的「高併發處理 （500,000 TPS）、防黃牛、即時選位與超時處理」等嚴苛情境，我們在架構中引進了 **Redis** 作為記憶體快取與佇列層，以降低資料庫負載。
 
-- **選用技術與原因**：
-  - **後端：Python + Flask**。Flask 是一個輕量級的網頁框架，學習曲線平緩，非常適合用來快速建立只有少數路由與功能的小型系統。
-  - **模板引擎：Jinja2**。內建於 Flask 中，可以直接在 HTML 中寫入 Python 變數與邏輯（如迴圈、條件判斷），快速實現動態網頁渲染。
-  - **資料庫：SQLite**。這是一個輕量級的關聯式資料庫，不需要額外架設伺服器，資料儲存在單一檔案中，非常適合初期的使用者紀錄與香油錢捐獻紀錄。
+*   **後端框架**: Python + Flask
+*   **頁面渲染 (View)**: Jinja2 模板引擎與少量原生 JavaScript（用於非同步更新）。本專案為減少複雜度，未完全採前後端分離，頁面由 Flask 直接渲染，僅在等候室 polling 與座位鎖定使用 AJAX。
+*   **資料庫 (長期持久化)**: SQLite (透過 SQLAlchemy ORM)。負責儲存使用者帳號、實名資料、音樂會場次設定與已結帳完成的訂單。
+*   **高效能暫存與隊列 (Memory Cache & Queue)**: Redis。負責處理最消耗系統資源的「虛擬等候室排隊」以及「10 分鐘座位分散式鎖 (Distributed Lock)」。
+*   **MVC 架構應用**:
+    *   **Model**: 封裝 SQLite 與 Redis 的資料存取邏輯。
+    *   **View**: `templates/` 目錄下的 HTML 頁面，負責將資料視覺化傳遞給終端樂迷。
+    *   **Controller**: `routes/` 目錄下的 Blueprint，負責處理身分驗證、分流排隊、鎖定座位等業務邏輯。
 
-- **Flask MVC 模式說明**：
-  - **Model（模型）**：負責與資料庫（SQLite）溝通。例如定義 `User`（使用者）與 `History`（算命紀錄）等資料表結構，並處理資料的新增、查詢。
-  - **View（視圖）**：負責畫面呈現，由 Jinja2 搭配 HTML/CSS/JS 構成。用來呈現抽籤結果、捐獻表單與歷史紀錄畫面。
-  - **Controller（控制器）**：由 Flask 的路由 (`routes`) 擔任。負責接收來自使用者的 Request（如點擊抽籤、註冊會員、送出捐獻表單），調用 Model 去要資料，最後把資料傳給 View 來產生畫面回傳給使用者。
+---
 
 ## 2. 專案資料夾結構
 
-以下是專案預計的資料夾結構，每個目錄與檔案皆有明確的職責劃分：
+專案以功能和模組作為劃分，確保每個檔案職責分明：
 
 ```text
-web_app_development/
-├── app/
-│   ├── models/             ← 資料庫模型 (Models)
-│   │   ├── __init__.py
-│   │   ├── user.py         ← 會員資料表定義 (處理註冊登入)
-│   │   └── record.py       ← 算命紀錄與捐獻紀錄資料表定義
-│   ├── routes/             ← Flask 路由 (Controllers)
-│   │   ├── __init__.py
-│   │   ├── main.py         ← 首頁與算命/抽籤的核心路由
-│   │   ├── auth.py         ← 註冊、登入與登出路由
-│   │   └── api.py          ← (可選) 處理前端 AJAX 請求，像是香油錢捐獻 API
-│   ├── templates/          ← Jinja2 HTML 模板 (Views)
-│   │   ├── base.html       ← 共用模板（包含標頭、導覽列、頁尾）
-│   │   ├── index.html      ← 首頁/算命介面
-│   │   ├── result.html     ← 抽籤/算命結果顯示頁面
-│   │   ├── history.html    ← 會員中心與歷史紀錄頁面
-│   │   ├── donate.html     ← 香油錢捐獻頁面
-│   │   └── auth/           ← 身份驗證相關視圖
-│   │       ├── login.html
-│   │       └── register.html
-│   └── static/             ← CSS / JS 等靜態資源
-│       ├── css/
-│       │   └── style.css   ← 全站共用樣式 (如需客製化或擴充 Tailwind)
-│       ├── js/
-│       │   └── custom.js   ← 處理抽籤動畫等前端互動腳本
-│       └── images/         ← 籤筒、擲筊、籤詩圖片等
-├── instance/
-│   └── database.db         ← SQLite 資料庫 (存放實際資料，不進版本控制)
-├── docs/                   ← 專案設計文件 (PRD, 架構文件等)
-├── .gitignore              ← Git 忽略檔案設定
-├── app.py                  ← 專案入口檔 (初始化 Flask App)
-└── requirements.txt        ← Python 套件依賴清單
+app/
+  __init__.py          ← Flask 應用程式工廠與套件初始化 (Redis, SQLAlchemy)
+  models/              ← Model 儲存邏輯
+    user_model.py      ← 使用者與實名制資料庫模型
+    event_model.py     ← 演唱會與座位基礎資料模型
+    order_model.py     ← 訂單資料夾與狀態模型
+  routes/              ← Controller 路由模組 (Flask Blueprints)
+    auth.py            ← 處理登入、實名驗證、簡訊驗證
+    queue.py           ← 處理防黃牛機制與虛擬等候室分流
+    ticketing.py       ← 處理選位、即時鎖定防重號 (Double Booking)
+    payment.py         ← 處理結帳流程與超時釋票機制
+  services/            ← 高併發商業邏輯模組
+    redis_service.py   ← 處理等候室進出隊列演算法以及分散式鎖
+  templates/           ← View Jinja2 HTML 樣板
+    base.html          ← 網站共用 Layout (選單、Footer)
+    index.html         ← 首頁 (熱門演唱會清單)
+    waiting_room.html  ← 虛擬等候室頁面
+    seat_selection.html← 可視化座位點選地圖
+    checkout.html      ← 訂單確認與金流支付頁面
+  static/              ← 前端靜態資源
+    css/style.css      ← 網站樣式 (加入排隊與座位的動態狀態樣式)
+    js/queue.js        ← 處理等候室的倒數計時與順序 Polling
+    js/seat.js         ← 處理座位的即時選取反饋與自動釋放
+instance/
+  database.db          ← SQLite 實體資料庫檔案
+config.py              ← 專案設定檔 (資料庫連線字串、鍵值設定)
+app.py                 ← 程式執行入口
+requirements.txt       ← Python 套件依賴清單
 ```
+
+---
 
 ## 3. 元件關係圖
 
-以下展示使用者從瀏覽器發出請求，到系統處理並回傳畫面的完整流程（MVC 資料流）：
+以下流程圖說明當一個樂迷點擊搶票後，不同技術元件的協同合作方式：
 
 ```mermaid
-graph TD
-    %% 定義節點
-    Browser(瀏覽器 - 使用者)
-    
-    subgraph Flask Application
-        Route[Flask Route<br>Controller]
-        Model[Model<br>Database Logic]
-        Template[Jinja2 Template<br>View]
-    end
-    
-    DB[(SQLite<br>Database)]
+flowchart TD
+    Browser((使用者瀏覽器))
+    Jinja2[Jinja2 模板渲染]
+    FlaskRouter[Flask 路由]
+    RedisQ[(Redis Queue)]
+    RedisLock[(Redis Seat Lock)]
+    SQLite[(SQLite 資料庫)]
 
-    %% 流程線
-    Browser -- "1. 發出 HTTP Request (如點擊抽籤)" --> Route
-    Route -- "2. 要求查詢或寫入紀錄" --> Model
-    Model -- "資料讀寫" --> DB
-    Model -. "3. 回傳資料物件" .-> Route
-    Route -- "4. 傳遞變數給視圖渲染" --> Template
-    Template -. "5. 生成完整 HTML" .-> Route
-    Route -. "6. 回傳 HTTP Response (HTML)" .-> Browser
+    %% HTTP Request
+    Browser -- "HTTP GET/POST\n(含防黃牛驗證與 Polling)" --> FlaskRouter
+    FlaskRouter -- "回傳渲染後的 HTML" --> Jinja2
+    Jinja2 -- "顯示排隊順位/座位表" --> Browser
 
-    %% 樣式設定
-    classDef default fill:#f9f9f9,stroke:#333,stroke-width:2px;
-    classDef highlight fill:#d4edda,stroke:#28a745,stroke-width:2px;
-    class Route,Model,Template highlight;
+    %% Server Logic
+    FlaskRouter -- "1. 註冊/驗證排隊順位\n判斷是否能進入座位區" --> RedisQ
+    FlaskRouter -- "2. 即時鎖定座位\n(TTL: 10 mins)" --> RedisLock
+    FlaskRouter -- "3. 更新訂單狀態\n驗證實名身分" --> SQLite
 ```
+
+---
 
 ## 4. 關鍵設計決策
 
-1. **不分離前後端，採用 Jinja2 直接渲染頁面**
-   - **原因**：考量到這是一個以內容呈現與表單遞交為主的 MVP 專案，採用伺服器端渲染能省去前端框架設置以及 API 串接等跨域 (CORS) 複雜度，開發速度更快，也可以更容易處理 SEO（若未來有需要）。
-2. **利用 Flask Blueprints 按功能拆分路由**
-   - **原因**：為了避免所有的功能（算命、登入、捐款）都混雜在同一個 `app.py` 中，我們在 `routes/` 資料夾下利用 Blueprint 切分不同的負責範圍（例如 `main.py`, `auth.py`）。這樣可以保持程式碼整潔，方便未來擴充或除錯。
-3. **資料庫單純化，採用 SQLite**
-   - **原因**：系統初期主要需要記錄「會員帳號」與「過去抽籤結果」，資料量與併發數不大。選用 SQLite 不需要額外架設資料庫伺服器，且在 Python 內建支援極佳，備份也非常容易（只要拷貝一個 .db 檔案）。
-4. **抽籤/擲筊等動畫效果交由前端 JavaScript 實作**
-   - **原因**：互動動畫（例如搖晃籤筒、丟擲筊杯）是不需要頻繁往返後端邏輯的視覺效果。為確保畫面流暢自然，這些互動將在前端使用純 JavaScript 及 CSS 動畫負責，直到結果出爐才與後端通訊（例如儲存紀錄或判斷邏輯），減少伺服器負載。
+1.  **混合資料存儲 (Database Mixed Strategy)**
+    *   **決策**：棄用純 SQLite 面對搶票情境，結合 Redis 作為主防線。
+    *   **原因**：SQLite 在應對 PRD 要求中 500k TPS 會產生嚴重的 Database Lock 問題導致崩潰。透過把最龐大的「排隊狀態確認」和「座位即時搶奪鎖定」丟給 Redis 甚至擋在 Web Server 層，能夠有效確保核心系統不崩潰。
+2.  **前端 Polling 輪詢替代 WebSocket 通訊**
+    *   **決策**：虛擬等候室 (`waiting_room.html`) 採用 JavaScript 設定計時器（`setInterval`），每 3-5 秒向後端發送一次 HTTP GET 請求查詢自己是否排到。
+    *   **原因**：對於 50 萬人的虛擬等候室，維持等量的 WebSocket 持續連線對伺服器記憶體開銷十分巨大，而無狀態的 HTTP Polling 在這種高併發場景下反而更易於用 CDN / Load Balancer 進行水平擴展。
+3.  **依賴 Redis TTL (Time-To-Live) 實現超時釋票**
+    *   **決策**：在選取位子時，會在 Redis 寫入一組帶有 `EX 600` (10 分鐘過期) 參數的 Key-Value Pair 作為鎖定。
+    *   **原因**：如此一來不用撰寫複雜的背景定時清掃任務 (CRON job)，如果用戶十分鐘內未結帳完成，Redis 會自動刪除對該座位的鎖，其他用戶在畫面重新整理時立刻可以看見該座位並重新選取。
+4.  **AI 防黃牛與 CAPTCHA 解耦**
+    *   **決策**：防黃牛問答題與圖形驗證放置在進入等候室「之前」或進入「選位畫面之前」的中繼頁面。
+    *   **原因**：將產生驗證圖片、計算運算的消耗完全從核心搶票 API 中抽離出來，避免腳本因為惡意請求驗證區塊而拖垮了實際處理訂單的伺服器效能。
